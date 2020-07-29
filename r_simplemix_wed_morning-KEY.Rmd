@@ -456,7 +456,9 @@ mcmc_gibbs_Z_and_P_and_W <- function(
   # we need to have an initial value for the Z's.  Just sample it, randomly from w
   z <- sample(1:2, size = n, replace = TRUE, prob = w)
   
-
+  # store z every iteration for final output
+  z_trace <- matrix(NA,nrow=nIter, ncol=n)
+  
   # cycle over the sweeps
   for (rep in 1:nIter) {
     
@@ -469,8 +471,11 @@ mcmc_gibbs_Z_and_P_and_W <- function(
     # Gibbs update for z
     w <- newW_gibbs(z, b)
     
+    # store z
+    z_trace[rep,] = z
+    
   }
-  return(list(P=P,z=z,w=w))
+  return(list(P=P,z=z,w=w, z_trace = z_trace))
 }
 ```
 
@@ -499,3 +504,119 @@ res$w
 table(res$z,sim$z) # note the label-switching....
 ```
 
+Rather than just taking the final result, we should really average over the iterations.
+And do a longer run. Here I plot the trace of the MCMC for individual 1, and I comupute
+for each individual the posterior mode of its assigment (1 or 2). The posterior mode\ assignments in this case turn out to be exactly correct.
+```{r}
+res = mcmc_gibbs_Z_and_P_and_W(sim$x, nIter = 1000)
+plot(res$z_trace[,1], main="trace of assignments of individual 1")
+post_assignment_prob_pop2 <- colMeans(res$z_trace==2)
+post_mode_z = 1+ (post_assignment_prob_pop2>0.5)
+table(post_mode_z,sim$z)
+```
+
+## Adding a function to trace the log-target value
+
+When we are running MCMC we should always monitor its convergence somehow.
+It is really useful to do this by computing $\log \pi(x)$ where $\pi$ is the target
+distribution. This is useful because even if $x$ is very high dimensional 
+$\log \pi(x)$ is just a one-dimensional real number. 
+
+These functions compute the value of $\log p(x,z,P,w | a,b)$.
+
+```{r}
+#' @param x an R vector of data (single genotype)
+#' @param p an R vector of allele frequencies
+#' @return the log-likelihood for a single individual given the allele frequencies in its population
+log_pr_x_given_p = function(x,p){
+  return(sum(x*log(p)+(1-x)*log(1-p)))
+}
+
+
+# Compute the log of the target distribution p(x,z,P,w | a,b)
+#' @param x an n by R matrix of genotypes
+#' @param z an n vector of population assignments
+#' @param P a 2 by R matrix of allele frequencies
+#' @param w a 2-vector of population proportions
+#' @param a a 2-vector of prior parameters for the allele frequencies
+#' @param b a 2-vector of prior parameters for the mixing proportions
+log_pi = function(x,z,P,w,a,b){
+  n = nrow(x)
+ 
+  log_prior_z = sum(ifelse(z==1, log(w[1]), log(w[2])))
+  log_prior_P = sum(dbeta(P,shape1=a[1], shape2=a[2],log=TRUE))
+  log_prior_w = dbeta(w[1],b[1],b[2])
+  
+  # now compute the term log Pr(x | z,P) by summing over individuals
+  loglik = 0
+  for(i in 1:n){
+    loglik = loglik + log_pr_x_given_p(x[i,],P[z[i],])
+  }
+  
+  return(loglik+log_prior_z+log_prior_P+log_prior_w)
+}
+```
+
+
+Now incorporate that trace into the function
+
+```{r}
+# do mcmc by Gibbs sampling for Z and P and W
+#' @param x an n by R matrix of genotypes
+#' @param a a 2-vector of prior parameters for the allele frequencies
+#' @param b a 2-vector of prior parameters for the mixing proportions
+#' @param nIter the number of sweeps (updates of both Z and P) of the chain to perform
+mcmc_gibbs_Z_and_P_and_W <- function(
+  x, 
+  a = c(1, 1), 
+  b = c(1, 1), 
+  nIter = 500
+) {
+  
+  n <- nrow(x)
+  R <- ncol(x)
+  K <- 2
+  
+  # initialize w
+  w <- c(0.5,0.5)
+  
+  # we need to have an initial value for the Z's.  Just sample it, randomly from w
+  z <- sample(1:2, size = n, replace = TRUE, prob = w)
+  
+  # store z every iteration for final output
+  z_trace <- matrix(NA,nrow=nIter, ncol=n)
+  
+  log_pi_trace <- rep(NA,nIter)
+  
+  # cycle over the sweeps
+  for (rep in 1:nIter) {
+    
+    # Gibbs update for P
+    P <- newP_gibbs(x, z, a)
+    
+    # Gibbs update for z
+    z <- newZ_gibbs(x, P, w)
+    
+    # Gibbs update for z
+    w <- newW_gibbs(z, b)
+    
+    # store z
+    z_trace[rep,] = z
+    log_pi_trace[rep] = log_pi(x,z,P,w,a,b)
+  }
+  return(list(P=P,z=z,w=w, z_trace = z_trace, log_pi_trace=log_pi_trace))
+}
+```
+
+Here we can run this on the example data. We run it 3 times and compare results:
+```{r}
+set.seed(123)
+sim = r_simplemix(n=20,P)
+res1 = mcmc_gibbs_Z_and_P_and_W(sim$x, nIter = 1000)
+res2 = mcmc_gibbs_Z_and_P_and_W(sim$x, nIter = 1000)
+res3 = mcmc_gibbs_Z_and_P_and_W(sim$x, nIter = 1000)
+plot(res1$log_pi_trace, ylab="log p(x,P,z,w)", type="l",col="black")
+lines(res2$log_pi_trace,col="red")
+lines(res3$log_pi_trace,col="green")
+```
+\
